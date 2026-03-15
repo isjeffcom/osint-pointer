@@ -59,7 +59,7 @@ npm install
 - 多个边缘节点不会破坏核心判断流程；影响主要是网络源可达性与请求延迟。
 - API 会返回 `meta.execution = edge-distributed` 和可用时的 `workerRegion`，方便观察请求落点。
 
-结论：可直接用 Cloudflare 边缘分布式模式达成，不必为了“单节点”牺牲可用性。
+结论：可直接用 Cloudflare 边缘分布式模式达成，不必为了"单节点"牺牲可用性。
 
 ### 推荐构建方法（对齐现代分析工具的部署路径）
 
@@ -114,4 +114,4 @@ git rebase origin/main
 - Agent debate / critic 机制
 - 证据图谱与时间线追踪
 - 持久化（D1 / KV / R2）用于历史追踪
-- 若未来有“全局单写状态”需求，可单独引入 Durable Object 作为协调层
+- 若未来有"全局单写状态"需求，可单独引入 Durable Object 作为协调层
