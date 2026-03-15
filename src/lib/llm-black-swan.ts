@@ -7,7 +7,6 @@ import type {
 
 const MINIMAX_BASE_URL = "https://api.minimax.io";
 const MINIMAX_CHAT_PATH = "/v1/text/chatcompletion_v2";
-/** 默认 M2.1-highspeed：推理更快、输出更稳，适合长 JSON；可改为 MiniMax-M2.5 / M2.5-highspeed（见 platform.minimax.io 文档） */
 const MINIMAX_DEFAULT_MODEL = "MiniMax-M2.1-highspeed";
 
 function getLLMConfig() {
@@ -24,9 +23,16 @@ function isMinimax(baseUrl: string): boolean {
   return /minimax\.(io|chat)/i.test(baseUrl);
 }
 
-const MAX_CONTEXT_POSTS = 140;
+const MAX_CONTEXT_POSTS = 80;
+const POST_CONTENT_MAX_CHARS = 200;
 
-/** 按时间分组并采样，总条数不超 MAX_CONTEXT_POSTS。返回的数组顺序即送 LLM 的 [1][2]… 编号，供 API 作为 osintPosts 返回以便证据 ref 对应。 */
+/** 截断 post 内容，避免长推文占用过多 input tokens */
+function truncateContent(content: string): string {
+  if (content.length <= POST_CONTENT_MAX_CHARS) return content;
+  return content.slice(0, POST_CONTENT_MAX_CHARS) + "…";
+}
+
+/** 按时间分组并采样，总条数不超 MAX_CONTEXT_POSTS */
 export function samplePostsForContext(posts: XPost[]): XPost[] {
   if (posts.length === 0) return [];
   const withDate = posts
@@ -55,10 +61,9 @@ export function samplePostsForContext(posts: XPost[]): XPost[] {
   return sampled.length > 0 ? sampled : posts.slice(0, MAX_CONTEXT_POSTS);
 }
 
-/** 将已按 samplePostsForContext 排序的列表格式化为送 LLM 的文本（编号与列表下标一致） */
 function buildOSINTContext(orderedPosts: XPost[]): string {
   if (orderedPosts.length === 0) {
-    return "（当前无 OSINT 条目，请基于「无新信号」给出低概率或「暂无显著黑天鹅」的结论。）";
+    return "（当前无 OSINT 条目。）";
   }
   let out = "";
   let lastDay = "";
@@ -70,68 +75,94 @@ function buildOSINTContext(orderedPosts: XPost[]): string {
       lastDay = dayKey;
     }
     const time = p.publishedAt ? new Date(p.publishedAt).toLocaleString("zh-CN") : "时间未知";
-    out += `[${i + 1}] ${time} @${p.author}: ${p.content}\n`;
+    out += `[${i + 1}] ${time} @${p.author}: ${truncateContent(p.content)}\n`;
   });
   return out.trim();
 }
 
-const SYSTEM_PROMPT = `你是一个 OSINT 情报简报员。用户会提供**近 6 小时内**按时间分组的 OSINT 条目。请识别**连贯性**：同一议题（如俄乌战争、以哈冲突、某国政策）的多条报道应合并为一条「持续事件」，并给出最新进展；真正新出现的议题标为「新兴事件」。每个结论必须**具体**（哪里、什么事件、前因后果），并列出**分析结果来源**（引用条目编号与原文片段）。
+/** 只送部分 refs 的帖子，用于 Step 2 */
+function buildPartialContext(orderedPosts: XPost[], refs: number[]): string {
+  const refSet = new Set(refs);
+  const lines: string[] = [];
+  for (const ref of refs) {
+    const idx = ref - 1;
+    if (idx < 0 || idx >= orderedPosts.length) continue;
+    const p = orderedPosts[idx];
+    const time = p.publishedAt ? new Date(p.publishedAt).toLocaleString("zh-CN") : "时间未知";
+    lines.push(`[${ref}] ${time} @${p.author}: ${truncateContent(p.content)}`);
+  }
+  return lines.length > 0 ? lines.join("\n") : "（无相关条目）";
+}
 
-**重要**：必须根据信源具体写出国家/地区与事件类型，不得用「某战略地点」「无新信号」等笼统表述。仅当输入真的没有任何相关条目时，才输出一条「暂无显著黑天鹅」类的低概率结论。
+// ---------------------------------------------------------------------------
+// Step 1: Topic Scan prompt — 输出极小（~400 tokens）
+// ---------------------------------------------------------------------------
+const TOPIC_SCAN_PROMPT = `你是 OSINT 情报分类员。用户给你一批 OSINT 条目（编号 [1][2]…）。
+请识别其中 5–10 个不同的议题/事件，对同一议题的多条报道合并。
 
-## 输出要求
-
-1. **事件列表 events**（至少 5 个、最多 10 个），每条必须包含：
-   - title: 具体事件标题（含地点或主体）
-   - location: 具体地区/国家/机构
-   - causeEffect: 一两句话简述前因后果或最新进展
-   - probability: 0~1 之间的发生概率（置信度）
-   - rationale: 分析依据概括
-   - category: 地缘、政策、市场、灾害、其他 之一
-   - **eventType**: "ongoing"（持续事件，如俄乌冲突、中东局势）或 "emerging"（新兴/新爆发的单一事件）
-   - **parentTopic**: 仅当 eventType 为 "ongoing" 时必填，填写该持续事件的主题，如「俄乌冲突」「中东局势」「美联储政策」
-   - sourceCount: 支撑该结论的 OSINT 条数（整数）
-   - evidence: 数组，每条为 { "ref": "条目编号", "quote": "原文片段或摘要" }，至少 1 条、最多 5 条
-   - **financeTradeImpact**（必填）：该事件对全球金融与贸易的影响。对象包含 positive（正面/机会）、negative（负面/风险）各一两句。
-
-2. **riskLevel**: low、medium、high、critical 之一。
-
-3. **timeline**: 3~10 条时间线节点，每条含 time（ISO8601）、label（具体描述）、type（source/cross/trend）、ref（可选）。
-
-请只输出一个合法 JSON，不要 markdown 代码块或其它文字。格式示例：
+输出规则：
+- 只输出一个合法 JSON，不要 markdown 代码块或其它文字
+- 格式：
 {
-  "events": [
+  "topics": [
     {
-      "title": "乌克兰东部某市交火升级",
-      "location": "顿涅茨克州",
-      "causeEffect": "连日炮击后双方在 X 市郊交火，可能触发更大规模动员。",
-      "probability": 0.28,
-      "rationale": "多源提及该市名与交火，尚未见官方确认。",
-      "category": "地缘",
-      "eventType": "ongoing",
-      "parentTopic": "俄乌冲突",
-      "sourceCount": 3,
-      "financeTradeImpact": { "positive": "避险资产短期获支撑", "negative": "欧洲天然气与供应链再承压" },
-      "evidence": [{ "ref": "1", "quote": "Breaking: explosions near X" }, { "ref": "2", "quote": "当地信源称交火持续" }]
-    },
-    {
-      "title": "某国央行意外加息",
-      "location": "某国",
-      "causeEffect": "为应对通胀首次超预期加息。",
-      "probability": 0.15,
-      "rationale": "单源报道，待验证。",
-      "category": "政策",
-      "eventType": "emerging",
-      "sourceCount": 1,
-      "financeTradeImpact": { "positive": "本币短期走强", "negative": "新兴市场资金外流风险" },
-      "evidence": [{ "ref": "5", "quote": "Central bank raises rate" }]
+      "name": "议题名称（具体：国家/地区+事件）",
+      "type": "ongoing 或 emerging",
+      "parentTopic": "仅 ongoing 时填写，如「俄乌冲突」",
+      "refs": [1, 3, 7],
+      "category": "地缘/政策/市场/灾害/其他"
     }
   ],
-  "riskLevel": "medium",
-  "timeline": [
-    { "time": "2026-03-15T08:00:00.000Z", "label": "路透报道某地爆炸", "type": "source", "ref": "1" }
+  "riskLevel": "low/medium/high/critical"
+}
+- refs 为支撑该议题的条目编号数组
+- name 必须具体（哪个国家、什么事件），不得用「某地」「某国」
+- 不要输出任何分析、概率、依据等，只分类`;
+
+// ---------------------------------------------------------------------------
+// Step 2: Detail per topic prompt — 每次只分析 1 个事件（~500 tokens output）
+// ---------------------------------------------------------------------------
+const DETAIL_PROMPT = `你是 OSINT 情报简报员。用户会给你一个议题名称和相关的 OSINT 条目。
+请针对该议题输出 1 个事件的完整分析。
+
+输出规则：
+- 只输出一个合法 JSON 对象，不要 markdown 代码块或其它文字
+- 格式：
+{
+  "title": "具体事件标题（含地点或主体）",
+  "location": "具体地区/国家/机构",
+  "causeEffect": "一两句话简述前因后果或最新进展",
+  "probability": 0.35,
+  "rationale": "分析依据概括（1-2句）",
+  "category": "地缘/政策/市场/灾害/其他",
+  "eventType": "ongoing 或 emerging",
+  "parentTopic": "仅 ongoing 时填写",
+  "sourceCount": 3,
+  "financeTradeImpact": {
+    "positive": "正面/机会（1句）",
+    "negative": "负面/风险（1句）"
+  },
+  "evidence": [
+    { "ref": "1", "quote": "原文片段摘要" }
   ]
-}`;
+}
+- evidence 至少 1 条、最多 3 条
+- probability 为 0~1 的置信度
+- 必须具体，不得用「某战略地点」等笼统表述`;
+
+// ---------------------------------------------------------------------------
+// LLM types
+// ---------------------------------------------------------------------------
+type TopicScanResult = {
+  topics: Array<{
+    name: string;
+    type: "ongoing" | "emerging";
+    parentTopic?: string;
+    refs: number[];
+    category?: string;
+  }>;
+  riskLevel: "low" | "medium" | "high" | "critical";
+};
 
 export type LLMEventRaw = {
   title: string;
@@ -153,7 +184,10 @@ export type LLMAnalysisResult = {
   timeline: Array<{ time: string; label: string; type: string; ref?: string }>;
 };
 
-/** 从 LLM 输出中提取第一个 JSON 对象；若被截断则用栈补全缺失的 ] }，尽量可解析 */
+// ---------------------------------------------------------------------------
+// JSON parsing utilities
+// ---------------------------------------------------------------------------
+
 function extractFirstJsonObject(text: string): string {
   const trimmed = text.trim();
   const start = trimmed.indexOf("{");
@@ -164,20 +198,13 @@ function extractFirstJsonObject(text: string): string {
   let quote = "";
   for (let i = start; i < trimmed.length; i++) {
     const c = trimmed[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
+    if (escape) { escape = false; continue; }
     if (inString) {
       if (c === "\\") escape = true;
       else if (c === quote) inString = false;
       continue;
     }
-    if (c === '"' || c === "'") {
-      inString = true;
-      quote = c;
-      continue;
-    }
+    if (c === '"' || c === "'") { inString = true; quote = c; continue; }
     if (c === "{") stack.push("}");
     else if (c === "[") stack.push("]");
     else if (c === "}" || c === "]") {
@@ -187,107 +214,50 @@ function extractFirstJsonObject(text: string): string {
       if (stack.length === 0) return trimmed.slice(start, i + 1);
     }
   }
-  if (stack.length === 0) throw new Error("LLM 返回的 JSON 不完整（括号未闭合）");
-  const closed = trimmed.slice(start) + stack.reverse().join("");
-  return closed;
+  if (stack.length === 0) throw new Error("LLM 返回的 JSON 不完整");
+  return trimmed.slice(start) + stack.reverse().join("");
 }
 
-/** 去掉 JSON 字符串值内的未转义控制字符，避免 "Bad control character in string literal" */
 function sanitizeJsonControlChars(jsonStr: string): string {
   let result = "";
   let i = 0;
-  let inString = false;
-  let escape = false;
-  let quote = "";
+  let inStr = false;
+  let esc = false;
+  let q = "";
   while (i < jsonStr.length) {
     const c = jsonStr[i];
-    if (escape) {
-      result += c;
-      escape = false;
-      i++;
-      continue;
+    if (esc) { result += c; esc = false; i++; continue; }
+    if (inStr) {
+      if (c === "\\") { result += c; esc = true; i++; continue; }
+      if (c === q) { inStr = false; result += c; i++; continue; }
+      if (c === "\n") { result += "\\n"; i++; continue; }
+      if (c === "\r") { result += "\\r"; i++; continue; }
+      if (c === "\t") { result += "\\t"; i++; continue; }
+      if (c.charCodeAt(0) < 32) { result += " "; i++; continue; }
+      result += c; i++; continue;
     }
-    if (inString) {
-      if (c === "\\") {
-        result += c;
-        escape = true;
-        i++;
-        continue;
-      }
-      if (c === quote) {
-        inString = false;
-        result += c;
-        i++;
-        continue;
-      }
-      if (c === "\n") {
-        result += "\\n";
-        i++;
-        continue;
-      }
-      if (c === "\r") {
-        result += "\\r";
-        i++;
-        continue;
-      }
-      if (c === "\t") {
-        result += "\\t";
-        i++;
-        continue;
-      }
-      if (c.charCodeAt(0) < 32) {
-        result += " ";
-        i++;
-        continue;
-      }
-      result += c;
-      i++;
-      continue;
-    }
-    if (c === '"' || c === "'") {
-      inString = true;
-      quote = c;
-      result += c;
-      i++;
-      continue;
-    }
-    result += c;
-    i++;
+    if (c === '"' || c === "'") { inStr = true; q = c; result += c; i++; continue; }
+    result += c; i++;
   }
   return result;
 }
 
-function extractJSON(text: string): LLMAnalysisResult {
+function parseJSON<T>(text: string): T {
   const jsonStr = sanitizeJsonControlChars(extractFirstJsonObject(text));
-  let parsed: LLMAnalysisResult;
-  try {
-    parsed = JSON.parse(jsonStr) as LLMAnalysisResult;
-  } catch {
-    throw new Error("LLM 返回的 JSON 格式异常或已截断，无法解析");
-  }
-  if (!Array.isArray(parsed.events)) parsed.events = [];
-  if (!parsed.riskLevel) parsed.riskLevel = "medium";
-  if (!Array.isArray(parsed.timeline)) parsed.timeline = [];
-  return parsed;
+  return JSON.parse(jsonStr) as T;
 }
 
-export async function analyzeBlackSwanWithLLM(
-  posts: XPost[],
-  timeWindow: string = "近 30 分钟",
-  ongoingContext?: string
-): Promise<{ summary: BlackSwanSummary; metrics: DashboardMetrics }> {
-  const { apiKey, baseUrl, model } = getLLMConfig();
-  if (!apiKey) {
-    throw new Error(
-      "未配置 MINIMAX_API_KEY 或 LLM_API_KEY，请在环境变量中设置"
-    );
-  }
+// ---------------------------------------------------------------------------
+// Core: callLLM — single reusable LLM call
+// ---------------------------------------------------------------------------
 
-  const context = buildOSINTContext(posts);
-  const ongoingBlock = ongoingContext?.trim()
-    ? `\n以下为近期持续事件（供参考，可据此判断是否仍为持续事件）：\n${ongoingContext}\n\n`
-    : "";
-  const userPrompt = `${ongoingBlock}以下为「${timeWindow}」内按日分组的 OSINT 条目（编号即 ref，格式：时间 @作者 内容）。请识别持续事件与新兴事件，输出至少 5 个、最多 10 个事件的简报式结论与证据来源 JSON。\n\n${context}`;
+async function callLLM(
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens: number = 2048
+): Promise<string> {
+  const { apiKey, baseUrl, model } = getLLMConfig();
+  if (!apiKey) throw new Error("未配置 MINIMAX_API_KEY 或 LLM_API_KEY");
 
   const useMinimax = isMinimax(baseUrl);
   const url = useMinimax
@@ -297,15 +267,16 @@ export async function analyzeBlackSwanWithLLM(
   const body: Record<string, unknown> = {
     model,
     messages: [
-      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
     temperature: 0.3,
   };
   if (useMinimax) {
-    body.max_tokens = 8192;
+    body.max_tokens = maxTokens;
   } else if (baseUrl.includes("openai.com")) {
     body.response_format = { type: "json_object" };
+    body.max_tokens = maxTokens;
   }
 
   const res = await fetch(url, {
@@ -319,46 +290,125 @@ export async function analyzeBlackSwanWithLLM(
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`LLM 请求失败 ${res.status}: ${err.slice(0, 500)}`);
+    throw new Error(`LLM 请求失败 ${res.status}: ${err.slice(0, 300)}`);
   }
 
   const data = (await res.json()) as {
-    choices?: Array<{
-      message?: { content?: string; reasoning_content?: string };
-    }>;
+    choices?: Array<{ message?: { content?: string; reasoning_content?: string } }>;
     base_resp?: { status_code?: number; status_msg?: string };
   };
 
   if (data.base_resp?.status_code !== undefined && data.base_resp.status_code !== 0) {
-    throw new Error(
-      data.base_resp.status_msg || `MiniMax 返回错误码 ${data.base_resp.status_code}`
-    );
+    throw new Error(data.base_resp.status_msg || `MiniMax 错误码 ${data.base_resp.status_code}`);
   }
 
   const message = data.choices?.[0]?.message;
   const content = message?.content?.trim() || message?.reasoning_content?.trim();
   if (!content) throw new Error("LLM 未返回内容");
+  return content;
+}
 
-  const analyzed = extractJSON(content);
+// ---------------------------------------------------------------------------
+// Step 1: scanTopics
+// ---------------------------------------------------------------------------
+
+async function scanTopics(
+  orderedPosts: XPost[],
+  timeWindow: string,
+  ongoingContext?: string
+): Promise<TopicScanResult> {
+  const context = buildOSINTContext(orderedPosts);
+  const ongoingBlock = ongoingContext?.trim()
+    ? `\n近期持续事件（供参考）：\n${ongoingContext}\n\n`
+    : "";
+  const userPrompt = `${ongoingBlock}以下为「${timeWindow}」的 OSINT 条目，请分类出 5–10 个议题：\n\n${context}`;
+
+  const raw = await callLLM(TOPIC_SCAN_PROMPT, userPrompt, 2048);
+  const result = parseJSON<TopicScanResult>(raw);
+
+  if (!Array.isArray(result.topics) || result.topics.length === 0) {
+    throw new Error("Step 1 未返回有效 topics");
+  }
+  if (!result.riskLevel) result.riskLevel = "medium";
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: analyzeOneTopic
+// ---------------------------------------------------------------------------
+
+async function analyzeOneTopic(
+  topicName: string,
+  topicType: "ongoing" | "emerging",
+  parentTopic: string | undefined,
+  category: string | undefined,
+  orderedPosts: XPost[],
+  refs: number[]
+): Promise<LLMEventRaw | null> {
+  const context = buildPartialContext(orderedPosts, refs);
+  const userPrompt = `议题：${topicName}\n类型：${topicType}${parentTopic ? `\n所属主题：${parentTopic}` : ""}${category ? `\n分类：${category}` : ""}\n\n相关 OSINT 条目：\n${context}`;
+
+  try {
+    const raw = await callLLM(DETAIL_PROMPT, userPrompt, 2048);
+    const event = parseJSON<LLMEventRaw>(raw);
+    if (!event.title) return null;
+    return event;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API: analyzeBlackSwanWithLLM (ReAct two-step)
+// ---------------------------------------------------------------------------
+
+export async function analyzeBlackSwanWithLLM(
+  posts: XPost[],
+  timeWindow: string = "近 6 小时",
+  ongoingContext?: string
+): Promise<{ summary: BlackSwanSummary; metrics: DashboardMetrics }> {
+  const { apiKey } = getLLMConfig();
+  if (!apiKey) throw new Error("未配置 MINIMAX_API_KEY 或 LLM_API_KEY，请在环境变量中设置");
+
+  // Step 1: Topic Scan
+  const scan = await scanTopics(posts, timeWindow, ongoingContext);
+
+  // Step 2: Detail per topic (parallel)
+  const detailResults = await Promise.allSettled(
+    scan.topics.slice(0, 10).map((t) =>
+      analyzeOneTopic(t.name, t.type as "ongoing" | "emerging", t.parentTopic, t.category, posts, t.refs)
+    )
+  );
+
   const now = new Date().toISOString();
+  const events: BlackSwanEvent[] = [];
 
-  const events: BlackSwanEvent[] = analyzed.events.slice(0, 10).map((e, i) => ({
-    id: `bs-${i + 1}`,
-    title: e.title || "未命名事件",
-    location: e.location,
-    causeEffect: e.causeEffect,
-    probability: Math.max(0, Math.min(1, Number(e.probability) || 0)),
-    rationale: e.rationale || "",
-    evidence: Array.isArray(e.evidence) ? e.evidence : undefined,
-    sourceCount: typeof e.sourceCount === "number" ? e.sourceCount : undefined,
-    timeWindow,
-    category: e.category || "其他",
-    financeTradeImpact: e.financeTradeImpact && (e.financeTradeImpact.positive || e.financeTradeImpact.negative)
-      ? { positive: e.financeTradeImpact.positive, negative: e.financeTradeImpact.negative }
-      : undefined,
-    eventType: e.eventType === "ongoing" || e.eventType === "emerging" ? e.eventType : undefined,
-    parentTopic: e.parentTopic?.trim() || undefined,
-  }));
+  for (let i = 0; i < detailResults.length; i++) {
+    const result = detailResults[i];
+    if (result.status !== "fulfilled" || !result.value) continue;
+    const e = result.value;
+    events.push({
+      id: `bs-${events.length + 1}`,
+      title: e.title || "未命名事件",
+      location: e.location,
+      causeEffect: e.causeEffect,
+      probability: Math.max(0, Math.min(1, Number(e.probability) || 0)),
+      rationale: e.rationale || "",
+      evidence: Array.isArray(e.evidence) ? e.evidence : undefined,
+      sourceCount: typeof e.sourceCount === "number" ? e.sourceCount : undefined,
+      timeWindow,
+      category: e.category || scan.topics[i]?.category || "其他",
+      financeTradeImpact: e.financeTradeImpact && (e.financeTradeImpact.positive || e.financeTradeImpact.negative)
+        ? { positive: e.financeTradeImpact.positive, negative: e.financeTradeImpact.negative }
+        : undefined,
+      eventType: e.eventType === "ongoing" || e.eventType === "emerging" ? e.eventType : (scan.topics[i]?.type as "ongoing" | "emerging") ?? undefined,
+      parentTopic: e.parentTopic?.trim() || scan.topics[i]?.parentTopic || undefined,
+    });
+  }
+
+  // Build timeline from posts referenced in events
+  const timeline = buildTimelineFromEvents(events, posts);
 
   const summary: BlackSwanSummary = {
     updatedAt: now,
@@ -368,16 +418,46 @@ export async function analyzeBlackSwanWithLLM(
 
   const metrics: DashboardMetrics = {
     updatedAt: now,
-    timeline: analyzed.timeline
-      .filter((t) => t.label && t.label.trim())
-      .map((t) => ({
-        time: t.time || now,
-        label: t.label.trim(),
-        type: t.type || "source",
-        ref: t.ref,
-      })),
-    riskLevel: analyzed.riskLevel,
+    timeline,
+    riskLevel: scan.riskLevel,
   };
 
   return { summary, metrics };
+}
+
+function buildTimelineFromEvents(events: BlackSwanEvent[], posts: XPost[]) {
+  const refSet = new Set<number>();
+  for (const ev of events) {
+    if (ev.evidence) {
+      for (const e of ev.evidence) {
+        const n = parseInt(e.ref, 10);
+        if (!isNaN(n)) refSet.add(n);
+      }
+    }
+  }
+  const nodes: Array<{ time: string; label: string; type: string; ref?: string }> = [];
+  for (const ref of [...refSet].sort((a, b) => a - b).slice(0, 10)) {
+    const p = posts[ref - 1];
+    if (!p?.publishedAt) continue;
+    nodes.push({
+      time: p.publishedAt,
+      label: truncateContent(p.content),
+      type: "source",
+      ref: String(ref),
+    });
+  }
+  if (nodes.length === 0 && posts.length > 0) {
+    const sorted = [...posts]
+      .filter((p) => p.publishedAt)
+      .sort((a, b) => new Date(a.publishedAt!).getTime() - new Date(b.publishedAt!).getTime())
+      .slice(-6);
+    for (const p of sorted) {
+      nodes.push({
+        time: p.publishedAt!,
+        label: truncateContent(p.content),
+        type: "source",
+      });
+    }
+  }
+  return nodes;
 }

@@ -708,12 +708,6 @@ export default function HomePage() {
           </>
         )}
 
-        <section className="border-t border-slate-700 pt-6">
-          <p className="text-slate-500 text-sm">
-            旧版：按关键词抓取 X 并做单条推文可信度打分（规则引擎，无需 API Key）。
-            <a href="/analyze" className="text-sky-400 ml-2 hover:underline">前往 /analyze</a>
-          </p>
-        </section>
       </div>
     </main>
   );
