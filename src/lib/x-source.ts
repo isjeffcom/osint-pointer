@@ -1,6 +1,15 @@
 import { type XPost } from "@/lib/types";
 
-const NITTER_INSTANCES = ["https://nitter.poast.org", "https://nitter.privacydev.net", "https://nitter.net"];
+/** 多实例提高可用性；部署环境（如 Workers）可能被部分实例限流，优先尝试常用稳定实例 */
+const NITTER_INSTANCES = [
+  "https://nitter.poast.org",
+  "https://nitter.privacydev.net",
+  "https://nitter.net",
+  "https://nitter.space",
+  "https://xcancel.com",
+  "https://nitter.privacyredirect.com",
+  "https://nitter.catsarch.com",
+];
 
 /** 从 RSS item 中提取首张图片 URL（enclosure / media:content / description 内 img） */
 function extractFirstImageUrl(item: string): string | undefined {
@@ -58,7 +67,7 @@ export async function fetchXPostsByUser(
         const res = await fetch(rssUrl, {
           headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0 osint-pointer" },
           cache: "no-store",
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(18000),
         });
         if (!res.ok) continue;
         const xml = await res.text();
@@ -82,8 +91,9 @@ export async function fetchXPosts(query: string, limit = 8): Promise<{ posts: XP
     const rssUrl = `${instance}/search/rss?f=tweets&q=${encodeURIComponent(clean)}`;
     try {
       const res = await fetch(rssUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 osint-pointer" },
-        cache: "no-store"
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0 osint-pointer" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(18000),
       });
       if (!res.ok) continue;
       const xml = await res.text();

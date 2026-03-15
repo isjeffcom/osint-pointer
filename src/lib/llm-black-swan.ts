@@ -186,8 +186,74 @@ function extractFirstJsonObject(text: string): string {
   throw new Error("LLM 返回的 JSON 不完整（括号未闭合）");
 }
 
+/** 去掉 JSON 字符串值内的未转义控制字符，避免 "Bad control character in string literal" */
+function sanitizeJsonControlChars(jsonStr: string): string {
+  let result = "";
+  let i = 0;
+  let inString = false;
+  let escape = false;
+  let quote = "";
+  while (i < jsonStr.length) {
+    const c = jsonStr[i];
+    if (escape) {
+      result += c;
+      escape = false;
+      i++;
+      continue;
+    }
+    if (inString) {
+      if (c === "\\") {
+        result += c;
+        escape = true;
+        i++;
+        continue;
+      }
+      if (c === quote) {
+        inString = false;
+        result += c;
+        i++;
+        continue;
+      }
+      if (c === "\n") {
+        result += "\\n";
+        i++;
+        continue;
+      }
+      if (c === "\r") {
+        result += "\\r";
+        i++;
+        continue;
+      }
+      if (c === "\t") {
+        result += "\\t";
+        i++;
+        continue;
+      }
+      if (c.charCodeAt(0) < 32) {
+        result += " ";
+        i++;
+        continue;
+      }
+      result += c;
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = true;
+      quote = c;
+      result += c;
+      i++;
+      continue;
+    }
+    result += c;
+    i++;
+  }
+  return result;
+}
+
 function extractJSON(text: string): LLMAnalysisResult {
-  const jsonStr = extractFirstJsonObject(text);
+  let jsonStr = extractFirstJsonObject(text);
+  jsonStr = sanitizeJsonControlChars(jsonStr);
   const parsed = JSON.parse(jsonStr) as LLMAnalysisResult;
   if (!Array.isArray(parsed.events)) parsed.events = [];
   if (!parsed.riskLevel) parsed.riskLevel = "medium";

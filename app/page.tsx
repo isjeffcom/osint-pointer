@@ -51,24 +51,32 @@ function useBlackSwanData() {
     let cancelled = false;
     fetch("/api/black-swan")
       .then(async (r) => {
-        const data = await r.json().catch(() => ({}));
+        let data: Record<string, unknown> = {};
+        try {
+          const text = await r.text();
+          data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        } catch {
+          if (!r.ok) setError("接口返回异常，请重试");
+          else setError("接口返回数据解析失败（可能含非法字符），请重试");
+          return;
+        }
         if (!r.ok) {
           if (r.status === 503 && data.error === "MISSING_LLM_API_KEY") {
             setErrorCode("MISSING_LLM_API_KEY");
-            setError(data.message || "请配置 MINIMAX_API_KEY 或 LLM_API_KEY");
+            setError((data.message as string) || "请配置 MINIMAX_API_KEY 或 LLM_API_KEY");
           } else if (r.status === 503 && data.error === "NO_OSINT_DATA") {
             setErrorCode("NO_OSINT_DATA");
-            setError(data.message || "当前无法从 OSINT 信源拉取到数据，请稍后重试。");
+            setError((data.message as string) || "当前无法从 OSINT 信源拉取到数据，请稍后重试。");
           } else {
-            setError(data.message || `HTTP ${r.status}`);
+            setError((data.message as string) || `HTTP ${r.status}`);
           }
           return;
         }
         if (!cancelled) {
-          setSummary(data.summary);
-          setMetrics(data.metrics);
-          setMeta(data.meta ?? null);
-          setOsintPosts(Array.isArray(data.osintPosts) ? data.osintPosts : []);
+          setSummary((data.summary ?? null) as BlackSwanSummary | null);
+          setMetrics((data.metrics ?? null) as DashboardMetrics | null);
+          setMeta((data.meta ?? null) as BlackSwanApiMeta | null);
+          setOsintPosts(Array.isArray(data.osintPosts) ? (data.osintPosts as XPost[]) : []);
         }
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Unknown error"))
