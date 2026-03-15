@@ -39,7 +39,7 @@ npm run dev
 - **API**
   - `GET /api/black-swan`：执行「近 3 天 OSINT 拉取 → MiniMax 分析」，返回 5–10 个黑天鹅事件（含持续/新兴标注）与 Dashboard 指标。**本地/Node 运行时**会优先读 `.cache/black-swan.json` 缓存（5 分钟 TTL），命中则直接返回，避免重复拉取与调用 LLM；部署到 Cloudflare Workers 时无 fs，不会使用文件缓存，可自行接 KV 实现。
   - `GET /api/analyze?query=...`：按关键词抓取 X 并做单条推文可信度打分（规则引擎，无需 API Key）。
-- 部署：可走 Cloudflare Workers（`npm run build:worker` / `npm run deploy:worker`），需在 Workers 环境配置 `MINIMAX_API_KEY` 等。
+- 部署：可走 Cloudflare Workers。**部署前必须先构建**：`npm run deploy:worker` 会先执行 `build:worker` 生成 `.open-next/worker.js`，再执行 `wrangler deploy`。CI/云端若只跑 `wrangler deploy` 会报错「entry-point file .open-next/worker.js was not found」，请改为使用 `npm run deploy:worker` 或先跑 `npm run build:worker` 再跑 `wrangler deploy`。需在 Workers 环境配置 `MINIMAX_API_KEY` 等。
 
 ---
 
