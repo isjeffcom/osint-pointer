@@ -81,6 +81,24 @@ npm run deploy:worker
 - `wrangler.toml`
 - `app/api/analyze/route.ts`（`runtime = "edge"`）
 
+
+### 我自己先处理冲突（推荐）
+
+可以直接在本地先把当前分支和 `main` 对齐，再发 PR：
+
+```bash
+npm run sync:main
+```
+
+等价于：
+
+```bash
+git fetch origin main
+git rebase origin/main
+```
+
+这样能把 “Merge conflicts” 在提交前就处理掉。
+
 ## 开发协作（避免 PR 冲突）
 
 单人开发也可能因为多次并行提交导致 PR 冲突。建议每次提交前先执行：

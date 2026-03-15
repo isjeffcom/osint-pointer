@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build:worker": "opennextjs-cloudflare build",
-    "deploy:worker": "wrangler deploy"
+    "deploy:worker": "wrangler deploy",
+    "sync:main": "bash scripts/sync-with-main.sh"
   },
   "dependencies": {
     "@heroui/react": "^2.6.11",
