@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build:worker": "opennextjs-cloudflare build",
-    "deploy:worker": "wrangler deploy"
+    "deploy:worker": "wrangler deploy",
+    "sync:main": "bash scripts/sync-with-main.sh"
   },
   "dependencies": {
     "@heroui/react": "^2.6.11",
@@ -23,7 +24,7 @@
     "@types/node": "22.10.1",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
-    "eslint": "9.14.0",
+    "eslint": "8.57.1",
     "eslint-config-next": "14.2.16",
     "typescript": "5.6.3",
     "vitest": "2.1.4",

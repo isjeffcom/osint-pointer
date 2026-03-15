@@ -18,4 +18,22 @@ describe("analyzePosts", () => {
       expect(item.signals).toHaveLength(4);
     });
   });
+
+  it("is deterministic when a fixed analysis time is provided", () => {
+    const fixedNow = new Date("2026-03-15T07:00:00.000Z");
+    const posts = [
+      {
+        id: "a",
+        author: "geo_observer",
+        content: "Satellite image confirms movement",
+        link: "x",
+        publishedAt: "2026-03-15T05:00:00.000Z"
+      }
+    ];
+
+    const first = analyzePosts(posts, { now: fixedNow });
+    const second = analyzePosts(posts, { now: fixedNow });
+
+    expect(first).toEqual(second);
+  });
 });

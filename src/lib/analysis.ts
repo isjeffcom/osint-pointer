@@ -6,6 +6,10 @@ const stopWords = new Set(["with", "this", "that", "from", "have", "been", "abou
 
 const clamp = (n: number) => Math.max(0, Math.min(1, n));
 
+type AnalyzeOptions = {
+  now?: Date;
+};
+
 function sourceReputation(post: XPost): AgentResult {
   let score = 0.45;
   const author = post.author.toLowerCase();
@@ -32,11 +36,11 @@ function contentEvidence(post: XPost): AgentResult {
   };
 }
 
-function temporalConsistency(post: XPost): AgentResult {
+function temporalConsistency(post: XPost, now: Date): AgentResult {
   if (!post.publishedAt) {
     return { name: "temporal_consistency", score: 0.5, rationale: "Missing timestamp; assigned neutral temporal score." };
   }
-  const ageHours = (Date.now() - new Date(post.publishedAt).getTime()) / 3_600_000;
+  const ageHours = (now.getTime() - new Date(post.publishedAt).getTime()) / 3_600_000;
   const score = 0.3 + 0.6 * Math.exp(-Math.max(ageHours, 0) / 72);
   return {
     name: "temporal_consistency",
@@ -77,10 +81,12 @@ function verdict(confidence: number): ClaimAssessment["verdict"] {
   return "Low confidence";
 }
 
-export function analyzePosts(posts: XPost[]): ClaimAssessment[] {
+export function analyzePosts(posts: XPost[], options: AnalyzeOptions = {}): ClaimAssessment[] {
+  const now = options.now ?? new Date();
   const consensus = consensusMap(posts);
+
   return posts.map((post) => {
-    const signals = [sourceReputation(post), contentEvidence(post), temporalConsistency(post), consensus.get(post.id)!];
+    const signals = [sourceReputation(post), contentEvidence(post), temporalConsistency(post, now), consensus.get(post.id)!];
     const confidence = Number((signals.reduce((sum, s) => sum + s.score, 0) / signals.length).toFixed(3));
     return {
       claim: post.content,

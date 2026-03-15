@@ -64,6 +64,12 @@ export default function HomePage() {
         <>
           <p style={{ color: "#94a3b8" }}>
             命中 {data.posts.length} 条结果。{sourceMessage}
+            {data.meta && (
+              <>
+                <br />
+                分析时间：{new Date(data.meta.analyzedAt).toLocaleString()} · 执行模式：{data.meta.execution}{data.meta.workerRegion ? ` · 边缘区域: ${data.meta.workerRegion}` : ""}
+              </>
+            )}
           </p>
           <section style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
             {data.assessments.map((assessment, idx) => (

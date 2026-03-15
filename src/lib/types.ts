@@ -24,4 +24,9 @@ export type DashboardResponse = {
   posts: XPost[];
   assessments: ClaimAssessment[];
   sourceMode: "rss" | "mock";
+  meta?: {
+    analyzedAt: string;
+    execution: "edge-distributed";
+    workerRegion: string | null;
+  };
 };
