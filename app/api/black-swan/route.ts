@@ -45,11 +45,11 @@ function getOngoingKvBinding(): KvBinding | undefined {
 
 export const dynamic = "force-dynamic";
 
-/** 数据窗口：近 3 天；接口可每 30 分钟被调用一次以更新结果 */
-const WINDOW_DAYS = 3;
+/** 数据窗口：近 6 小时；接口可每 30 分钟被调用一次以更新结果 */
+const WINDOW_HOURS = 6;
 
 /**
- * 完整数据分析流水线：近 30 分钟 OSINT 拉取 → LLM 黑天鹅分析 → 返回摘要与 Dashboard 指标。
+ * 完整数据分析流水线：近 6 小时 OSINT 拉取 → LLM 黑天鹅分析 → 返回摘要与 Dashboard 指标。
  * 本地优先读 .cache/black-swan.json 缓存（5 分钟 TTL）；Cloudflare 部署无 fs，需改用 KV。
  */
 export async function GET() {
@@ -76,30 +76,49 @@ export async function GET() {
     }
   }
 
+  let feed: Awaited<ReturnType<typeof fetchRecentOSINT>>;
   try {
-    const feed = await fetchRecentOSINT(WINDOW_DAYS, 40);
-    if (feed.posts.length === 0) {
-      return NextResponse.json(
-        {
-          error: "NO_OSINT_DATA",
-          message: "当前无法从配置的 OSINT 信源拉取到数据，请稍后重试或检查网络与 Nitter 可用性。",
-        },
-        { status: 503 }
-      );
-    }
-    const timeWindowLabel = feed.windowLabel ?? `近 ${WINDOW_DAYS} 天`;
-    const orderedPosts = samplePostsForContext(feed.posts);
+    feed = await fetchRecentOSINT(WINDOW_HOURS, 40);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "拉取失败";
+    return NextResponse.json(
+      { error: "FETCH_FAILED", message: `OSINT 拉取异常: ${msg}` },
+      { status: 503 }
+    );
+  }
 
-    const kv = getOngoingKvBinding();
-    let ongoingContext = "";
-    let prunedState: { updateId: number; events: { topic: string; lastSeen: number; summary?: string }[] } | null = null;
-    if (kv) {
-      const raw = await getOngoingState(kv);
-      const state = raw ?? { updateId: 0, events: [] };
-      prunedState = pruneOngoingEvents(state);
-      ongoingContext = formatOngoingContext(prunedState);
-    }
+  if (feed.posts.length === 0) {
+    return NextResponse.json(
+      {
+        error: "NO_OSINT_DATA",
+        message: "当前无法从配置的 OSINT 信源拉取到数据，请稍后重试或检查网络与 Nitter 可用性。",
+      },
+      { status: 503 }
+    );
+  }
 
+  const timeWindowLabel = feed.windowLabel ?? `近 ${WINDOW_HOURS} 小时`;
+  const orderedPosts = samplePostsForContext(feed.posts);
+  const osintPostsPayload = (orderedPosts.length > 0 ? orderedPosts : feed.posts).map((p) => ({
+    id: p.id,
+    author: p.author,
+    content: p.content,
+    link: p.link,
+    publishedAt: p.publishedAt,
+    ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
+  }));
+
+  const kv = getOngoingKvBinding();
+  let ongoingContext = "";
+  let prunedState: { updateId: number; events: { topic: string; lastSeen: number; summary?: string }[] } | null = null;
+  if (kv) {
+    const raw = await getOngoingState(kv);
+    const state = raw ?? { updateId: 0, events: [] };
+    prunedState = pruneOngoingEvents(state);
+    ongoingContext = formatOngoingContext(prunedState);
+  }
+
+  try {
     const { summary, metrics } = await analyzeBlackSwanWithLLM(
       orderedPosts,
       timeWindowLabel,
@@ -134,23 +153,35 @@ export async function GET() {
         fetchedAt: feed.fetchedAt,
         windowLabel: timeWindowLabel,
       },
-      osintPosts: (orderedPosts.length > 0 ? orderedPosts : feed.posts).map((p) => ({
-        id: p.id,
-        author: p.author,
-        content: p.content,
-        link: p.link,
-        publishedAt: p.publishedAt,
-        ...(p.imageUrl ? { imageUrl: p.imageUrl } : {}),
-      })),
+      osintPosts: osintPostsPayload,
     };
     if (nodeCache?.isCacheAvailable()) nodeCache.writeCache(payload);
     return NextResponse.json(payload);
   } catch (e) {
     const message = e instanceof Error ? e.message : "分析失败";
-    return NextResponse.json(
-      { error: "ANALYSIS_FAILED", message },
-      { status: 500 }
-    );
+    const partialPayload = {
+      summary: {
+        updatedAt: new Date().toISOString(),
+        timeWindow: timeWindowLabel,
+        events: [] as Array<{ id: string; title: string; probability: number }>,
+      },
+      metrics: {
+        updatedAt: new Date().toISOString(),
+        timeline: buildTimelineFromPosts(feed.posts),
+        riskLevel: "low" as const,
+        sourceDistribution: feed.sourceDistribution ?? {},
+      },
+      meta: {
+        sourceMode: feed.sourceMode,
+        osintCount: feed.posts.length,
+        fetchedAt: feed.fetchedAt,
+        windowLabel: timeWindowLabel,
+      },
+      osintPosts: osintPostsPayload,
+      partial: true,
+      partialMessage: message,
+    };
+    return NextResponse.json(partialPayload);
   }
 }
 

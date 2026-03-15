@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 加载条：左右往复滑动 */
+@keyframes loading-bar {
+  0%, 100% { transform: translateX(-60%); }
+  50% { transform: translateX(120%); }
+}
+
 /* 信源跑马灯：无缝横向滚动 */
 @keyframes osint-ticker-scroll {
   0% { transform: translateX(0); }

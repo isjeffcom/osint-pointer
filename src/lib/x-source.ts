@@ -11,6 +11,13 @@ const NITTER_INSTANCES = [
   "https://nitter.catsarch.com",
 ];
 
+const RSS_FETCH_HEADERS: HeadersInit = {
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0 osint-pointer",
+  Accept: "application/rss+xml, application/xml, text/xml, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+const RSS_TIMEOUT_MS = 15000;
+
 /** 从 RSS item 中提取首张图片 URL（enclosure / media:content / description 内 img） */
 function extractFirstImageUrl(item: string): string | undefined {
   const enclosureMatch = item.match(/<enclosure\s[^>]*url=["']([^"']+)["'][^>]*type=["']image\/[^"']+["']/i)
@@ -65,9 +72,9 @@ export async function fetchXPostsByUser(
       const rssUrl = `${instance}/${encodeURIComponent(handle)}${path}`;
       try {
         const res = await fetch(rssUrl, {
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0 osint-pointer" },
+          headers: RSS_FETCH_HEADERS,
           cache: "no-store",
-          signal: AbortSignal.timeout(18000),
+          signal: AbortSignal.timeout(RSS_TIMEOUT_MS),
         });
         if (!res.ok) continue;
         const xml = await res.text();
@@ -91,9 +98,9 @@ export async function fetchXPosts(query: string, limit = 8): Promise<{ posts: XP
     const rssUrl = `${instance}/search/rss?f=tweets&q=${encodeURIComponent(clean)}`;
     try {
       const res = await fetch(rssUrl, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0 osint-pointer" },
+        headers: RSS_FETCH_HEADERS,
         cache: "no-store",
-        signal: AbortSignal.timeout(18000),
+        signal: AbortSignal.timeout(RSS_TIMEOUT_MS),
       });
       if (!res.ok) continue;
       const xml = await res.text();

@@ -46,6 +46,7 @@ function useBlackSwanData() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [partialMessage, setPartialMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -73,6 +74,7 @@ function useBlackSwanData() {
           return;
         }
         if (!cancelled) {
+          setPartialMessage(data.partial === true && typeof data.partialMessage === "string" ? data.partialMessage : null);
           setSummary((data.summary ?? null) as BlackSwanSummary | null);
           setMetrics((data.metrics ?? null) as DashboardMetrics | null);
           setMeta((data.meta ?? null) as BlackSwanApiMeta | null);
@@ -84,7 +86,7 @@ function useBlackSwanData() {
     return () => { cancelled = true; };
   }, []);
 
-  return { summary, metrics, meta, osintPosts, loading, error, errorCode };
+  return { summary, metrics, meta, osintPosts, loading, error, errorCode, partialMessage };
 }
 
 function RiskBadge({ level }: { level: DashboardMetrics["riskLevel"] }) {
@@ -280,7 +282,7 @@ function OsintTicker({ posts }: { posts: XPost[] }) {
 }
 
 export default function HomePage() {
-  const { summary, metrics, meta, osintPosts, loading, error, errorCode } = useBlackSwanData();
+  const { summary, metrics, meta, osintPosts, loading, error, errorCode, partialMessage } = useBlackSwanData();
 
   const probabilityChartData = summary?.events.map((e) => ({
     name: e.title.length > 12 ? e.title.slice(0, 12) + "…" : e.title,
@@ -321,6 +323,11 @@ export default function HomePage() {
       <div className="absolute inset-0 bg-gradient-to-b from-cyan-500/5 via-transparent to-transparent pointer-events-none" aria-hidden />
       <div className="max-w-[90rem] mx-auto relative px-4 sm:px-6 lg:px-8 py-6 md:py-10 space-y-8">
         {/* 首屏：标题 + 指数 + 跑马灯 */}
+        {partialMessage && (
+          <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2 text-amber-200 text-sm">
+            本次 LLM 分析未完成，仅展示信源动态与时间线：{partialMessage}
+          </div>
+        )}
         <header className="space-y-6">
           <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
             <div>
@@ -328,7 +335,7 @@ export default function HomePage() {
                 OSINT 黑天鹅指针
               </h1>
               <p className="text-slate-400 mt-2 text-sm sm:text-base max-w-xl">
-                近 3 天多源 OSINT 拉取 + LLM 简报分析（建议每 30 分钟更新）· 结论先行，证据可追溯
+                近 6 小时多源 OSINT 拉取 + LLM 简报分析（建议每 30 分钟更新）· 结论先行，证据可追溯
               </p>
             </div>
             {meta && (
@@ -380,8 +387,26 @@ export default function HomePage() {
         </header>
 
         {loading && (
-          <div className="flex items-center gap-3 text-slate-400">
-            <Spinner size="sm" /> 正在拉取近 3 天 OSINT 并调用 LLM 分析…
+          <div className="rounded-xl border border-slate-600/80 bg-slate-800/60 backdrop-blur-sm overflow-hidden">
+            <div className="px-5 py-6 space-y-4">
+              <div className="flex items-center gap-3 text-slate-300">
+                <Spinner size="md" classNames={{ circle1: "border-b-cyan-400", circle2: "border-b-cyan-500" }} />
+                <div>
+                  <p className="font-medium text-white">正在拉取近 6 小时 OSINT 并调用 LLM 分析</p>
+                  <p className="text-sm text-slate-500 mt-0.5">预计 30 秒–2 分钟，请耐心等待</p>
+                </div>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-slate-700 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 animate-[loading-bar_2s_ease-in-out_infinite]"
+                  style={{ width: "40%" }}
+                />
+              </div>
+              <p className="text-xs text-slate-500 flex items-center gap-2">
+                <span className="inline-block w-2 h-2 rounded-full bg-cyan-400/80 animate-pulse" />
+                多信源并行拉取 → 采样送 LLM → 生成简报与归因
+              </p>
+            </div>
           </div>
         )}
         {error && (
@@ -405,7 +430,7 @@ export default function HomePage() {
               </h2>
               <p className="text-slate-500 text-sm mb-4">
                 更新于 {new Date(summary.updatedAt).toLocaleString()}
-                {meta && <> · 数据来源：{meta.windowLabel ?? "近3天"} OSINT（{meta.osintCount ?? 0} 条）+ LLM 分析</>}
+                {meta && <> · 数据来源：{meta.windowLabel ?? "近6小时"} OSINT（{meta.osintCount ?? 0} 条）+ LLM 分析</>}
               </p>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
                 {summary.events.map((event: BlackSwanEvent, idx: number) => (
@@ -600,7 +625,7 @@ export default function HomePage() {
               {/* 时间线（带具体 label） */}
               <Card className="bg-slate-900/80 border border-slate-700 mt-6">
                 <CardHeader>
-                  <span className="text-slate-300">时间线（近 3 天信号节点）</span>
+                  <span className="text-slate-300">时间线（近 6 小时信号节点）</span>
                 </CardHeader>
                 <CardBody>
                   {metrics?.timeline?.length ? (

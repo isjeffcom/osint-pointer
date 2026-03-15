@@ -7,7 +7,8 @@ import type {
 
 const MINIMAX_BASE_URL = "https://api.minimax.io";
 const MINIMAX_CHAT_PATH = "/v1/text/chatcompletion_v2";
-const MINIMAX_DEFAULT_MODEL = "MiniMax-M2.5";
+/** 默认 M2.1-highspeed：推理更快、输出更稳，适合长 JSON；可改为 MiniMax-M2.5 / M2.5-highspeed（见 platform.minimax.io 文档） */
+const MINIMAX_DEFAULT_MODEL = "MiniMax-M2.1-highspeed";
 
 function getLLMConfig() {
   const apiKey =
@@ -25,7 +26,7 @@ function isMinimax(baseUrl: string): boolean {
 
 const MAX_CONTEXT_POSTS = 140;
 
-/** 按日分组并采样，保证 3 天均有代表、总条数不超 MAX_CONTEXT_POSTS。返回的数组顺序即送 LLM 的 [1][2]… 编号，供 API 作为 osintPosts 返回以便证据 ref 对应。 */
+/** 按时间分组并采样，总条数不超 MAX_CONTEXT_POSTS。返回的数组顺序即送 LLM 的 [1][2]… 编号，供 API 作为 osintPosts 返回以便证据 ref 对应。 */
 export function samplePostsForContext(posts: XPost[]): XPost[] {
   if (posts.length === 0) return [];
   const withDate = posts
@@ -74,7 +75,7 @@ function buildOSINTContext(orderedPosts: XPost[]): string {
   return out.trim();
 }
 
-const SYSTEM_PROMPT = `你是一个 OSINT 情报简报员。用户会提供**近 3 天内**按日分组的 OSINT 条目。请识别**连贯性**：同一议题（如俄乌战争、以哈冲突、某国政策）的多条报道应合并为一条「持续事件」，并给出最新进展；真正新出现的议题标为「新兴事件」。每个结论必须**具体**（哪里、什么事件、前因后果），并列出**分析结果来源**（引用条目编号与原文片段）。
+const SYSTEM_PROMPT = `你是一个 OSINT 情报简报员。用户会提供**近 6 小时内**按时间分组的 OSINT 条目。请识别**连贯性**：同一议题（如俄乌战争、以哈冲突、某国政策）的多条报道应合并为一条「持续事件」，并给出最新进展；真正新出现的议题标为「新兴事件」。每个结论必须**具体**（哪里、什么事件、前因后果），并列出**分析结果来源**（引用条目编号与原文片段）。
 
 **重要**：必须根据信源具体写出国家/地区与事件类型，不得用「某战略地点」「无新信号」等笼统表述。仅当输入真的没有任何相关条目时，才输出一条「暂无显著黑天鹅」类的低概率结论。
 
@@ -152,12 +153,12 @@ export type LLMAnalysisResult = {
   timeline: Array<{ time: string; label: string; type: string; ref?: string }>;
 };
 
-/** 从 LLM 输出中提取第一个完整 JSON 对象（按括号匹配），避免尾部说明文字导致 parse 报错 */
+/** 从 LLM 输出中提取第一个 JSON 对象；若被截断则用栈补全缺失的 ] }，尽量可解析 */
 function extractFirstJsonObject(text: string): string {
   const trimmed = text.trim();
   const start = trimmed.indexOf("{");
   if (start === -1) throw new Error("LLM 未返回有效 JSON");
-  let depth = 0;
+  const stack: string[] = [];
   let inString = false;
   let escape = false;
   let quote = "";
@@ -177,13 +178,18 @@ function extractFirstJsonObject(text: string): string {
       quote = c;
       continue;
     }
-    if (c === "{") depth++;
-    else if (c === "}") {
-      depth--;
-      if (depth === 0) return trimmed.slice(start, i + 1);
+    if (c === "{") stack.push("}");
+    else if (c === "[") stack.push("]");
+    else if (c === "}" || c === "]") {
+      if (stack.length === 0) return trimmed.slice(start, i + 1);
+      const expected = stack.pop();
+      if (c !== expected) continue;
+      if (stack.length === 0) return trimmed.slice(start, i + 1);
     }
   }
-  throw new Error("LLM 返回的 JSON 不完整（括号未闭合）");
+  if (stack.length === 0) throw new Error("LLM 返回的 JSON 不完整（括号未闭合）");
+  const closed = trimmed.slice(start) + stack.reverse().join("");
+  return closed;
 }
 
 /** 去掉 JSON 字符串值内的未转义控制字符，避免 "Bad control character in string literal" */
@@ -252,9 +258,13 @@ function sanitizeJsonControlChars(jsonStr: string): string {
 }
 
 function extractJSON(text: string): LLMAnalysisResult {
-  let jsonStr = extractFirstJsonObject(text);
-  jsonStr = sanitizeJsonControlChars(jsonStr);
-  const parsed = JSON.parse(jsonStr) as LLMAnalysisResult;
+  const jsonStr = sanitizeJsonControlChars(extractFirstJsonObject(text));
+  let parsed: LLMAnalysisResult;
+  try {
+    parsed = JSON.parse(jsonStr) as LLMAnalysisResult;
+  } catch {
+    throw new Error("LLM 返回的 JSON 格式异常或已截断，无法解析");
+  }
   if (!Array.isArray(parsed.events)) parsed.events = [];
   if (!parsed.riskLevel) parsed.riskLevel = "medium";
   if (!Array.isArray(parsed.timeline)) parsed.timeline = [];
