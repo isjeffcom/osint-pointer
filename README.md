@@ -90,14 +90,13 @@ npm run deploy:worker
 npm run sync:main
 ```
 
-等价于：
+默认会执行 `rebase`。如果你更习惯 merge：
 
 ```bash
-git fetch origin main
-git rebase origin/main
+bash scripts/sync-with-main.sh origin main merge
 ```
 
-这样能把 “Merge conflicts” 在提交前就处理掉。
+脚本会在冲突时列出冲突文件并给出下一步命令。
 
 ## 开发协作（避免 PR 冲突）
 
