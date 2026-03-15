@@ -36,6 +36,11 @@ npm run dev
 
 ## 测试与检查
 
+```bash
+npm run typecheck
+npm run test
+npm run lint
+```
 
 ### 安装依赖问题（ERESOLVE）
 
@@ -44,13 +49,6 @@ npm run dev
 ```bash
 rm -rf node_modules package-lock.json
 npm install
-```
-
-
-```bash
-npm run typecheck
-npm run test
-npm run lint
 ```
 
 ## Cloudflare Workers 部署（关于“单节点”）
@@ -82,6 +80,17 @@ npm run deploy:worker
 - `open-next.config.ts`
 - `wrangler.toml`
 - `app/api/analyze/route.ts`（`runtime = "edge"`）
+
+## 开发协作（避免 PR 冲突）
+
+单人开发也可能因为多次并行提交导致 PR 冲突。建议每次提交前先执行：
+
+```bash
+git fetch origin
+git rebase origin/main
+```
+
+若有冲突，先本地解决后再 push，避免在 PR 页面留冲突状态。
 
 ## 未来可扩展
 
