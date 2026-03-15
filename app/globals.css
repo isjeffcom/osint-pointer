@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 信源跑马灯：无缝横向滚动 */
+@keyframes osint-ticker-scroll {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+.osint-ticker-track {
+  display: flex;
+  width: max-content;
+  animation: osint-ticker-scroll 60s linear infinite;
+}
+.osint-ticker-track:hover {
+  animation-play-state: paused;
+}
+.osint-ticker-track > * {
+  flex-shrink: 0;
+}

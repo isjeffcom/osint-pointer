@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { analyzePosts } from "@/lib/analysis";
 import { fetchXPosts } from "@/lib/x-source";
 
-export const runtime = "edge";
-
+/** 使用默认 runtime，与 OpenNext Cloudflare 单 Worker 打包兼容（不再使用 edge） */
 function detectWorkerRegion(req: NextRequest): string | null {
   const header = req.headers.get("cf-ray");
   if (!header) return null;

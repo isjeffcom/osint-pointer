@@ -1,0 +1,17 @@
+{
+  "description": "OSINT 信源 X 账号列表，可自行增删。后端拉取这些账号时间线（Nitter RSS），失败时用账号名搜索回退。",
+  "handles": [
+    "osinttechnical",
+    "conflict_radar",
+    "sentdefender",
+    "osintwarfare",
+    "IntelCrab",
+    "OSINTdefender",
+    "ClashReport",
+    "GeoConfirmed",
+    "Osint613",
+    "ConflictsW",
+    "AggregateOsint",
+    "MenchOsint"
+  ]
+}

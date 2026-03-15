@@ -7,3 +7,8 @@ workers_dev = true
 [assets]
 directory = ".open-next/assets"
 binding = "ASSETS"
+
+# 正在发生事件事记（与 namespace 名 osint-pointer 对应，id 在 Dashboard KV 详情页复制）
+[[kv_namespaces]]
+binding = "osint-pointer"
+id = "2f7b5830b3a14bd7a6b4950813e7807c"
