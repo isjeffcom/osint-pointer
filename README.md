@@ -1,1 +1,81 @@
 # osint-pointer
+
+基于 **Next.js + React + TypeScript + HeroUI** 的 OSINT dashboard。
+
+目标不是“只展示信息”，而是通过 multi-agent 对 X 上的 claim 计算置信度与判决标签。
+
+## 技术栈（现代前端）
+
+- Next.js 14 (App Router)
+- React 18 + TypeScript
+- HeroUI（UI 组件）
+- Edge Runtime API (`app/api/analyze/route.ts`)
+
+## 能力概览
+
+- 输入关键词，抓取 X 相关公开信息（通过 Nitter RSS）
+- RSS 不可用时自动 fallback 到 mock 数据（保障持续演示）
+- 4 个分析 Agent：
+  - `source_reputation`
+  - `content_evidence`
+  - `temporal_consistency`
+  - `cross_post_consensus`
+- 聚合输出 verdict：
+  - `Likely credible`
+  - `Needs corroboration`
+  - `Low confidence`
+
+## 本地开发
+
+```bash
+npm install
+npm run dev
+```
+
+打开 `http://localhost:3000`。
+
+## 测试与检查
+
+```bash
+npm run typecheck
+npm run test
+npm run lint
+```
+
+## Cloudflare Workers 部署（关于“单节点”）
+
+你提到“是否需要强制单节点运行”。对于这个项目当前的核心分析逻辑，**不需要强制单节点**：
+
+- 当前是无状态分析（同一个请求内基于固定 `analyzedAt` 计算），适合分布式边缘执行。
+- 多个边缘节点不会破坏核心判断流程；影响主要是网络源可达性与请求延迟。
+- API 会返回 `meta.execution = edge-distributed` 和可用时的 `workerRegion`，方便你观察请求落点。
+
+> 结论：你的目标可以直接用 Cloudflare 边缘分布式模式达成，不必为了“单节点”牺牲可用性。
+
+### 推荐构建方法
+
+不少现代分析产品会采用：
+1. 前端与 API 同仓（Next.js）
+2. 边缘运行（Workers）
+3. 无状态计算 + 外部可选存储
+
+本项目使用 `@opennextjs/cloudflare`：
+
+```bash
+npm install
+npm run build:worker
+npm run deploy:worker
+```
+
+关键文件：
+- `open-next.config.ts`
+- `wrangler.toml`
+- `app/api/analyze/route.ts`（`runtime = "edge"`）
+
+## 未来可扩展
+
+- 接入更多源（Reddit / Telegram / 新闻 API）
+- Agent debate / critic 机制
+- 证据图谱与时间线追踪
+- 持久化（D1 / KV / R2）用于历史追踪
+- 若未来有“全局单写状态”需求，可单独引入 Durable Object 作为协调层
