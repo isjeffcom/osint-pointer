@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { fetchRecentOSINT } from "@/lib/osint-feed";
 import { analyzeBlackSwanWithLLM, samplePostsForContext } from "@/lib/llm-black-swan";
 import {
@@ -11,8 +11,11 @@ import {
 import type { XPost } from "@/lib/types";
 import type { KvBinding } from "@/lib/ongoing-kv";
 
+const CACHE_FRESH_MS = 30 * 60 * 1000; // 近 30 分钟内有缓存则直接展示
+
 async function getNodeCache(): Promise<{
   readCache: () => unknown;
+  readCacheWithMeta: () => { payload: unknown; cachedAt: number } | null;
   writeCache: (payload: unknown) => void;
   isCacheAvailable: () => boolean;
 } | null> {
@@ -20,6 +23,7 @@ async function getNodeCache(): Promise<{
     const mod = await import("@/lib/black-swan-cache");
     return mod as {
       readCache: () => unknown;
+      readCacheWithMeta: () => { payload: unknown; cachedAt: number } | null;
       writeCache: (payload: unknown) => void;
       isCacheAvailable: () => boolean;
     };
@@ -45,7 +49,9 @@ export const dynamic = "force-dynamic";
 
 const WINDOW_HOURS = 6;
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const onlyCache = request.nextUrl.searchParams.get("onlyCache") === "1";
+
   const apiKey =
     process.env.MINIMAX_API_KEY ??
     process.env.LLM_API_KEY ??
@@ -61,23 +67,41 @@ export async function GET() {
   }
 
   const nodeCache = await getNodeCache();
+
+  if (onlyCache) {
+    if (nodeCache?.isCacheAvailable() && typeof nodeCache.readCacheWithMeta === "function") {
+      const meta = nodeCache.readCacheWithMeta();
+      if (meta && Date.now() - meta.cachedAt <= CACHE_FRESH_MS) {
+        return NextResponse.json(meta.payload);
+      }
+    }
+    return NextResponse.json({ cached: false });
+  }
+
   if (nodeCache?.isCacheAvailable()) {
     const cached = nodeCache.readCache();
     if (cached) return NextResponse.json(cached);
   }
+
+  const LOG_PREFIX = "[osint]";
+  console.warn(LOG_PREFIX, "black-swan fetch start", "windowHours=" + WINDOW_HOURS);
 
   let feed: Awaited<ReturnType<typeof fetchRecentOSINT>>;
   try {
     feed = await fetchRecentOSINT(WINDOW_HOURS, 40);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "拉取失败";
+    console.warn(LOG_PREFIX, "black-swan FETCH_FAILED", msg);
     return NextResponse.json(
       { error: "FETCH_FAILED", message: `OSINT 拉取异常: ${msg}` },
       { status: 503 }
     );
   }
 
+  console.warn(LOG_PREFIX, "black-swan feed", "posts=" + feed.posts.length, "sourceMode=" + feed.sourceMode, "windowLabel=" + feed.windowLabel);
+
   if (feed.posts.length === 0) {
+    console.warn(LOG_PREFIX, "black-swan NO_OSINT_DATA (return 503)");
     return NextResponse.json(
       {
         error: "NO_OSINT_DATA",

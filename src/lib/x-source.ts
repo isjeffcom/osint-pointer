@@ -25,6 +25,19 @@ const RSS_FETCH_HEADERS: HeadersInit = {
 };
 const RSS_TIMEOUT_MS = 15000;
 
+/** 消费或取消 response body，避免 CF Worker 报 stalled response / deadlock */
+async function consumeRes(res: Response): Promise<void> {
+  try {
+    if (res.body) await res.body.cancel();
+  } catch {
+    try {
+      await res.text();
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function extractFirstImageUrl(item: string): string | undefined {
   const enclosureMatch = item.match(/<enclosure\s[^>]*url=["']([^"']+)["'][^>]*type=["']image\/[^"']+["']/i)
     || item.match(/<enclosure\s[^>]*type=["']image\/[^"']+["'][^>]*url=["']([^"']+)["']/i);
@@ -63,6 +76,8 @@ function parseRss(xml: string, defaultAuthor?: string): XPost[] {
 
 const USER_RSS_PATHS = ["/rss", "/with_replies/rss"];
 
+const LOG_PREFIX = "[OSINT]";
+
 /**
  * 从 Nitter 拉取指定 X 账号的推文 RSS。
  * 多路径、多实例重试。全部失败则尝试 RSSHub 备用。
@@ -72,7 +87,10 @@ export async function fetchXPostsByUser(
   limit = 25
 ): Promise<{ posts: XPost[]; sourceMode: "rss" | "mock" }> {
   const handle = username.replace(/^@/, "").trim();
-  if (!handle) return { posts: [], sourceMode: "mock" };
+  if (!handle) {
+    console.warn(LOG_PREFIX, "fetchByUser skip empty handle");
+    return { posts: [], sourceMode: "mock" };
+  }
 
   // 1. Try Nitter instances
   for (const instance of NITTER_INSTANCES) {
@@ -84,13 +102,23 @@ export async function fetchXPostsByUser(
           cache: "no-store",
           signal: AbortSignal.timeout(RSS_TIMEOUT_MS),
         });
-        if (!res.ok) continue;
+        if (!res.ok) {
+          console.warn(LOG_PREFIX, "nitter res !ok", handle, new URL(rssUrl).host, res.status);
+          await consumeRes(res);
+          continue;
+        }
         const xml = await res.text();
-        if (!xml.includes("<rss") || !xml.includes("<item>")) continue;
+        if (!xml.includes("<rss") || !xml.includes("<item>")) {
+          console.warn(LOG_PREFIX, "nitter no rss/item", handle, new URL(rssUrl).host, "len=" + xml.length);
+          continue;
+        }
         const posts = parseRss(xml, handle).slice(0, limit);
-        if (posts.length > 0) return { posts, sourceMode: "rss" };
-      } catch {
-        // next
+        if (posts.length > 0) {
+          console.warn(LOG_PREFIX, "nitter ok", handle, new URL(rssUrl).host, "posts=" + posts.length);
+          return { posts, sourceMode: "rss" };
+        }
+      } catch (e) {
+        console.warn(LOG_PREFIX, "nitter err", handle, new URL(rssUrl).host, String(e instanceof Error ? e.message : e));
       }
     }
   }
@@ -104,16 +132,27 @@ export async function fetchXPostsByUser(
         cache: "no-store",
         signal: AbortSignal.timeout(RSS_TIMEOUT_MS),
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn(LOG_PREFIX, "rsshub res !ok", handle, new URL(rssUrl).host, res.status);
+        await consumeRes(res);
+        continue;
+      }
       const xml = await res.text();
-      if (!xml.includes("<item>")) continue;
+      if (!xml.includes("<item>")) {
+        console.warn(LOG_PREFIX, "rsshub no item", handle, new URL(rssUrl).host, "len=" + xml.length);
+        continue;
+      }
       const posts = parseRss(xml, handle).slice(0, limit);
-      if (posts.length > 0) return { posts, sourceMode: "rss" };
-    } catch {
-      // next
+      if (posts.length > 0) {
+        console.warn(LOG_PREFIX, "rsshub ok", handle, new URL(rssUrl).host, "posts=" + posts.length);
+        return { posts, sourceMode: "rss" };
+      }
+    } catch (e) {
+      console.warn(LOG_PREFIX, "rsshub err", handle, new URL(rssUrl).host, String(e instanceof Error ? e.message : e));
     }
   }
 
+  console.warn(LOG_PREFIX, "fetchByUser mock (all failed)", handle);
   return { posts: [], sourceMode: "mock" };
 }
 
@@ -130,13 +169,20 @@ export async function fetchXPosts(query: string, limit = 8): Promise<{ posts: XP
         cache: "no-store",
         signal: AbortSignal.timeout(RSS_TIMEOUT_MS),
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        console.warn(LOG_PREFIX, "search nitter !ok", new URL(rssUrl).host, res.status);
+        await consumeRes(res);
+        continue;
+      }
       const xml = await res.text();
       if (!xml.includes("<rss")) continue;
       const posts = parseRss(xml).slice(0, limit);
-      if (posts.length > 0) return { posts, sourceMode: "rss" };
-    } catch {
-      // next
+      if (posts.length > 0) {
+        console.warn(LOG_PREFIX, "search nitter ok", new URL(rssUrl).host, "posts=" + posts.length);
+        return { posts, sourceMode: "rss" };
+      }
+    } catch (e) {
+      console.warn(LOG_PREFIX, "search nitter err", new URL(rssUrl).host, String(e instanceof Error ? e.message : e));
     }
   }
 
@@ -149,15 +195,22 @@ export async function fetchXPosts(query: string, limit = 8): Promise<{ posts: XP
         cache: "no-store",
         signal: AbortSignal.timeout(RSS_TIMEOUT_MS),
       });
-      if (!res.ok) continue;
+      if (!res.ok) {
+        await consumeRes(res);
+        continue;
+      }
       const xml = await res.text();
       if (!xml.includes("<item>")) continue;
       const posts = parseRss(xml).slice(0, limit);
-      if (posts.length > 0) return { posts, sourceMode: "rss" };
-    } catch {
-      // next
+      if (posts.length > 0) {
+        console.warn(LOG_PREFIX, "search rsshub ok", new URL(rssUrl).host, "posts=" + posts.length);
+        return { posts, sourceMode: "rss" };
+      }
+    } catch (e) {
+      console.warn(LOG_PREFIX, "search rsshub err", new URL(rssUrl).host, String(e instanceof Error ? e.message : e));
     }
   }
 
+  console.warn(LOG_PREFIX, "fetchXPosts mock (all failed)", clean.slice(0, 30));
   return { posts: [], sourceMode: "mock" };
 }

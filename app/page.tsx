@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Button,
   Card,
   CardBody,
   CardHeader,
@@ -38,6 +39,21 @@ type BlackSwanApiMeta = {
   windowLabel?: string;
 };
 
+function applyApiData(
+  data: Record<string, unknown>,
+  setSummary: (v: BlackSwanSummary | null) => void,
+  setMetrics: (v: DashboardMetrics | null) => void,
+  setMeta: (v: BlackSwanApiMeta | null) => void,
+  setOsintPosts: (v: XPost[]) => void,
+  setPartialMessage: (v: string | null) => void
+) {
+  setPartialMessage(data.partial === true && typeof data.partialMessage === "string" ? data.partialMessage : null);
+  setSummary((data.summary ?? null) as BlackSwanSummary | null);
+  setMetrics((data.metrics ?? null) as DashboardMetrics | null);
+  setMeta((data.meta ?? null) as BlackSwanApiMeta | null);
+  setOsintPosts(Array.isArray(data.osintPosts) ? (data.osintPosts as XPost[]) : []);
+}
+
 function useBlackSwanData() {
   const [summary, setSummary] = useState<BlackSwanSummary | null>(null);
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
@@ -47,9 +63,13 @@ function useBlackSwanData() {
   const [error, setError] = useState("");
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [partialMessage, setPartialMessage] = useState<string | null>(null);
+  const [needsTrigger, setNeedsTrigger] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  const runCollectAndAnalyze = () => {
+    setError("");
+    setErrorCode(null);
+    setNeedsTrigger(false);
+    setLoading(true);
     fetch("/api/black-swan")
       .then(async (r) => {
         let data: Record<string, unknown> = {};
@@ -57,8 +77,7 @@ function useBlackSwanData() {
           const text = await r.text();
           data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
         } catch {
-          if (!r.ok) setError("接口返回异常，请重试");
-          else setError("接口返回数据解析失败（可能含非法字符），请重试");
+          setError("接口返回异常，请重试");
           return;
         }
         if (!r.ok) {
@@ -73,12 +92,44 @@ function useBlackSwanData() {
           }
           return;
         }
-        if (!cancelled) {
-          setPartialMessage(data.partial === true && typeof data.partialMessage === "string" ? data.partialMessage : null);
-          setSummary((data.summary ?? null) as BlackSwanSummary | null);
-          setMetrics((data.metrics ?? null) as DashboardMetrics | null);
-          setMeta((data.meta ?? null) as BlackSwanApiMeta | null);
-          setOsintPosts(Array.isArray(data.osintPosts) ? (data.osintPosts as XPost[]) : []);
+        applyApiData(data, setSummary, setMetrics, setMeta, setOsintPosts, setPartialMessage);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Unknown error"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/black-swan?onlyCache=1")
+      .then(async (r) => {
+        let data: Record<string, unknown> = {};
+        try {
+          const text = await r.text();
+          data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+        } catch {
+          if (!r.ok) setError("接口返回异常，请重试");
+          else setError("接口返回数据解析失败（可能含非法字符），请重试");
+          return;
+        }
+        if (!r.ok) {
+          if (!cancelled) {
+            if (r.status === 503 && data.error === "MISSING_LLM_API_KEY") {
+              setErrorCode("MISSING_LLM_API_KEY");
+              setError((data.message as string) || "请配置 MINIMAX_API_KEY 或 LLM_API_KEY");
+            } else if (r.status === 503 && data.error === "NO_OSINT_DATA") {
+              setErrorCode("NO_OSINT_DATA");
+              setError((data.message as string) || "当前无法从 OSINT 信源拉取到数据，请稍后重试。");
+            } else {
+              setError((data.message as string) || `HTTP ${r.status}`);
+            }
+          }
+          return;
+        }
+        if (cancelled) return;
+        if (data.cached === false || !data.summary) {
+          setNeedsTrigger(true);
+        } else {
+          applyApiData(data, setSummary, setMetrics, setMeta, setOsintPosts, setPartialMessage);
         }
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Unknown error"))
@@ -86,7 +137,7 @@ function useBlackSwanData() {
     return () => { cancelled = true; };
   }, []);
 
-  return { summary, metrics, meta, osintPosts, loading, error, errorCode, partialMessage };
+  return { summary, metrics, meta, osintPosts, loading, error, errorCode, partialMessage, needsTrigger, runCollectAndAnalyze };
 }
 
 function RiskBadge({ level }: { level: DashboardMetrics["riskLevel"] }) {
@@ -282,7 +333,7 @@ function OsintTicker({ posts }: { posts: XPost[] }) {
 }
 
 export default function HomePage() {
-  const { summary, metrics, meta, osintPosts, loading, error, errorCode, partialMessage } = useBlackSwanData();
+  const { summary, metrics, meta, osintPosts, loading, error, errorCode, partialMessage, needsTrigger, runCollectAndAnalyze } = useBlackSwanData();
 
   const probabilityChartData = summary?.events.map((e) => ({
     name: e.title.length > 12 ? e.title.slice(0, 12) + "…" : e.title,
@@ -421,7 +472,16 @@ export default function HomePage() {
           </div>
         )}
 
-        {!loading && !error && summary && (
+        {!loading && !error && needsTrigger && (
+          <div className="rounded-xl border border-slate-600/80 bg-slate-800/60 backdrop-blur-sm p-8 flex flex-col items-center justify-center gap-4 text-center">
+            <p className="text-slate-300">近 30 分钟内暂无缓存数据，点击下方按钮开始拉取近 6 小时 OSINT 并进行 LLM 分析。</p>
+            <Button color="primary" size="lg" onPress={runCollectAndAnalyze} className="bg-cyan-600 hover:bg-cyan-500 text-white font-medium">
+              开始收集并分析
+            </Button>
+          </div>
+        )}
+
+        {!loading && !error && !needsTrigger && summary && (
           <>
             {/* 一、结论与证据（简报式 + 展开证据） */}
             <section>
@@ -482,39 +542,45 @@ export default function HomePage() {
                         size="sm"
                         className="max-w-full"
                       />
-                      {/* 展开：证据来源（树状归因） */}
-                      {(event.evidence?.length ?? 0) > 0 && (
-                        <div className="mt-4 border-t border-slate-700 pt-4">
-                          <p className="text-slate-400 text-sm font-medium mb-2">📎 分析结果来源（证据）</p>
-                          <ul className="space-y-3 pl-4 border-l-2 border-slate-600">
-                            {event.evidence!.map((ev: EventEvidence, i: number) => {
-                              const postIndex = refToIndex(ev.ref);
-                              const linkedPost = postIndex > 0 && osintPosts[postIndex - 1];
-                              const postWithImage = linkedPost && "imageUrl" in linkedPost && linkedPost.imageUrl;
-                              return (
-                                <li key={i} className="text-sm">
-                                  <p className="text-slate-300">{ev.quote}</p>
-                                  {linkedPost && (
-                                    <div className="mt-1.5 space-y-1">
-                                      {postWithImage && (
-                                        <a href={linkedPost.link} target="_blank" rel="noopener noreferrer" className="block rounded-lg overflow-hidden border border-slate-600 max-w-xs">
-                                          <img src={postWithImage} alt="" className="w-full h-auto max-h-48 object-cover" loading="lazy" referrerPolicy="no-referrer" />
-                                        </a>
-                                      )}
-                                      <span className="text-slate-500">
-                                        → 原文 @{linkedPost.author}: {linkedPost.content.slice(0, 80)}{linkedPost.content.length > 80 ? "…" : ""}
-                                        {linkedPost.link && (
-                                          <a href={linkedPost.link} target="_blank" rel="noopener noreferrer" className="text-sky-400 ml-1 hover:underline">链接</a>
+                      {/* 展开：证据来源（树状归因）；同一事件内相同 ref 的图片只展示一次，避免重复图 */}
+                      {(event.evidence?.length ?? 0) > 0 && (() => {
+                        const shownImageRefs = new Set<string>();
+                        return (
+                          <div className="mt-4 border-t border-slate-700 pt-4">
+                            <p className="text-slate-400 text-sm font-medium mb-2">📎 分析结果来源（证据）</p>
+                            <ul className="space-y-3 pl-4 border-l-2 border-slate-600">
+                              {event.evidence!.map((ev: EventEvidence, i: number) => {
+                                const postIndex = refToIndex(ev.ref);
+                                const linkedPost = postIndex > 0 && osintPosts[postIndex - 1];
+                                const postWithImage = linkedPost && "imageUrl" in linkedPost && linkedPost.imageUrl;
+                                const refKey = `${ev.ref}-${postIndex}`;
+                                const showImage = postWithImage && !shownImageRefs.has(refKey);
+                                if (showImage) shownImageRefs.add(refKey);
+                                return (
+                                  <li key={`${event.id}-ev-${i}-${ev.ref}`} className="text-sm">
+                                    <p className="text-slate-300">{ev.quote}</p>
+                                    {linkedPost && (
+                                      <div className="mt-1.5 space-y-1">
+                                        {showImage && (
+                                          <a href={linkedPost.link} target="_blank" rel="noopener noreferrer" className="block rounded-lg overflow-hidden border border-slate-600 max-w-xs">
+                                            <img src={postWithImage} alt="" className="w-full h-auto max-h-48 object-cover" loading="lazy" referrerPolicy="no-referrer" />
+                                          </a>
                                         )}
-                                      </span>
-                                    </div>
-                                  )}
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        </div>
-                      )}
+                                        <span className="text-slate-500">
+                                          → 原文 @{linkedPost.author}: {linkedPost.content.slice(0, 80)}{linkedPost.content.length > 80 ? "…" : ""}
+                                          {linkedPost.link && (
+                                            <a href={linkedPost.link} target="_blank" rel="noopener noreferrer" className="text-sky-400 ml-1 hover:underline">链接</a>
+                                          )}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        );
+                      })()}
                     </CardBody>
                   </Card>
                 ))}

@@ -34,6 +34,19 @@ export function readCache(): CachedPayload | null {
   }
 }
 
+/** 读取缓存并返回 payload 与时间戳，不做过期判断，供「30 分钟内是否有效」等逻辑使用 */
+export function readCacheWithMeta(): { payload: CachedPayload; cachedAt: number } | null {
+  try {
+    const path = getCachePath();
+    if (!existsSync(path)) return null;
+    const raw = readFileSync(path, "utf-8");
+    const data = JSON.parse(raw) as { cachedAt: number; payload: CachedPayload };
+    return { payload: data.payload, cachedAt: data.cachedAt };
+  } catch {
+    return null;
+  }
+}
+
 export function writeCache(payload: CachedPayload): void {
   try {
     const dir = join(process.cwd(), CACHE_DIR);
